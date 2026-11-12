@@ -12,6 +12,11 @@ import (
 //
 //go:generate go run ./internal/gennav -admin ../admin -out nav_gen.go -icons icons
 
+// The repository's .github/README.md, which GitHub shows on the repository's
+// page, is rendered from README.md.
+//
+//go:generate go run ./internal/ghreadme
+
 // navSection is a titled group of the sidebar, as the web admin's
 // (content), (community)… route groups.
 type navSection struct {

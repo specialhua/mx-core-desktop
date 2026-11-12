@@ -14,6 +14,8 @@ Mix Space 后台的桌面客户端，基于 [MyGo](https://mygo.run) 和 [Onevra
 
 这个应用作为 mx-core 的桌面客户端单独维护，**所有改动都限定在 `apps/desktop/` 目录内**，不修改 `apps/core`（服务端）、`apps/admin`（Web 后台）和共享包。
 
+唯一的例外是 `.github/README.md`：它让 GitHub 仓库首页显示这份介绍（GitHub 优先显示 `.github/README.md`，所以根目录的 mx-core README 保持不动）。它由 `apps/desktop/README.md` 生成，不要直接编辑：改完 `apps/desktop/README.md` 后，在 `apps/desktop` 里运行 `go run ./internal/ghreadme`（`go generate` 也会运行它）。两份不一致时 `go test ./...` 会失败。
+
 它只使用 mx-core 已经公开的能力，对它们只读、不改：
 
 | 依赖的上游能力 | 位置 | 用途 |
@@ -84,6 +86,8 @@ README_SCREENSHOTS=docs/screenshots go test -run TestReadmeScreenshots
 
 `SCREENSHOTS=<dir> go test -run TestScreens` 会把测试里渲染的各个界面保存为 PNG，方便检查。
 
+修改 `apps/desktop/README.md` 后，运行 `go run ./internal/ghreadme` 同步仓库首页的 `.github/README.md`。
+
 ## 代码结构
 
 | 文件 | 内容 |
@@ -97,5 +101,6 @@ README_SCREENSHOTS=docs/screenshots go test -run TestReadmeScreenshots
 | `auth.go` / `server.go` | 设备授权、令牌交换、服务器探测 |
 | `nav.go` / `nav_gen.go` / `icons/` | 侧边栏数据（`nav_gen.go` 和 `icons/` 是生成的） |
 | `internal/gennav` | 侧边栏生成器 |
+| `internal/ghreadme` | 由 `README.md` 生成 `.github/README.md` |
 
 主题使用 MyGo 默认主题，没有用 Onevra 的配色，这样原生部分和 Web 后台的观感更接近。
