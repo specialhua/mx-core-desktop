@@ -70,3 +70,29 @@ func activeNavPath(route string) string {
 	}
 	return best
 }
+
+// navTrail returns the sidebar items from the top down to the one at path,
+// or nil when no item has it.
+func navTrail(path string) []navItem {
+	var find func(items []navItem) []navItem
+	find = func(items []navItem) []navItem {
+		for _, it := range items {
+			if it.Path == path {
+				return []navItem{it}
+			}
+			if rest := find(it.Children); rest != nil {
+				return append([]navItem{it}, rest...)
+			}
+		}
+		return nil
+	}
+	if path == "" {
+		return nil
+	}
+	for _, s := range navSections {
+		if trail := find(s.Items); trail != nil {
+			return trail
+		}
+	}
+	return nil
+}

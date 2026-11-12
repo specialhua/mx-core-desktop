@@ -13,16 +13,20 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
+	"github.com/oneo-me/onevra/source/components/command"
+	"github.com/oneo-me/onevra/source/shells/sidebar"
 )
 
 // app is the state the window shows. The view and the methods called from
 // it run on the main thread; goroutines change the state through
 // win.Update.
 type app struct {
-	win *mygo.Window
-	web *mygo.WebView
-	set settings
-	srv server
+	shell *sidebar.Shell
+	win   *mygo.Window
+	web   *mygo.WebView
+	set   settings
+	srv   server
 
 	// route is the web admin's hash route, as the bridge reported it; ""
 	// until the first page reported one.
@@ -30,9 +34,11 @@ type app struct {
 	// nav is the sidebar item chosen: the path of the item route is under.
 	nav string
 
+	// page is the page the shell shows (pageKind), as last set.
+	page string
+
 	// The setup screen.
 	serverInput string
-	setupErr    string
 	probing     bool
 
 	// The sign-in screen.
@@ -42,13 +48,23 @@ type app struct {
 	loadErr string
 	// handingOff is set while the web view loads /device/web-handoff.
 	handingOff bool
+
+	// toasts wait for the main window's next frame (notify).
+	toasts []ui.Toast
+
+	// The command palette (palette.go).
+	paletteOpen bool
+	palette     command.State
+
+	// The settings window (prefs.go), nil while closed.
+	prefs      *mygo.Window
+	prefsState components.SettingsState
 }
 
 type loginState struct {
 	busy     bool
 	code     *deviceCode
 	url      string
-	err      string
 	cancel   context.CancelFunc
 	password bool // the user chose the web admin's own password form
 	// tried is set once the Keychain's token was traded for a session, or
@@ -71,15 +87,25 @@ func main() {
 	mygo.Bind(&Bridge{a})
 
 	mygo.App.WhenReady(func() {
-		a.win = mygo.NewWindow(mygo.WindowOptions{
-			Title:     "Mix Space",
-			Width:     1360,
-			Height:    880,
-			MinWidth:  900,
-			MinHeight: 560,
-			StateKey:  "main",
-			Content:   ui.View(a.view),
+		a.shell = sidebar.NewShell(sidebar.ShellOptions{
+			Title:        "Mix Space",
+			Width:        1360,
+			Height:       880,
+			MinWidth:     900,
+			MinHeight:    560,
+			StateKey:     "main",
+			LeftWidth:    220,
+			LeftMinWidth: 180,
+			LeftMaxWidth: 320,
+			Left:         a.sidebarView,
+			LeftToolbar:  a.sidebarToolbar,
+			Content:      a.contentView,
+			ContentTitle: a.contentTitle,
+			// Not a palette: the app keeps MyGo's theme, closer to the web
+			// admin's than Onevra's. The hook switches the page.
+			Theme: a.beginFrame,
 		})
+		a.win = a.shell.Window()
 		a.buildMenu()
 		if a.set.Server != "" {
 			a.connect(a.set.Server, false)
@@ -93,7 +119,7 @@ func main() {
 // connect resolves the server and opens the web admin. Called on the main
 // thread; the network goes on a goroutine.
 func (a *app) connect(raw string, save bool) {
-	a.probing, a.setupErr = true, ""
+	a.probing = true
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -101,7 +127,7 @@ func (a *app) connect(raw string, save bool) {
 		a.win.Update(func() {
 			a.probing = false
 			if err != nil {
-				a.setupErr = a.tr("无法连接服务器：", "Cannot reach the server: ") + err.Error()
+				a.notify(components.ToastError, "connect", a.tr("无法连接服务器", "Cannot reach the server"), err.Error())
 				if !save {
 					// A saved server that is down: keep it, let the user retry or change it.
 					a.srv = server{}
@@ -137,7 +163,7 @@ func (a *app) openWeb(url string) {
 		},
 	})
 	if err != nil {
-		a.setupErr = err.Error()
+		a.notify(components.ToastError, "connect", a.tr("无法打开后台", "Cannot open the admin"), err.Error())
 		return
 	}
 	a.web = web
@@ -178,6 +204,7 @@ func (a *app) openWeb(url string) {
 
 // routeChanged follows the web admin's navigation.
 func (a *app) routeChanged(route string) {
+	prev := a.route
 	a.route = route
 	a.nav = activeNavPath(route)
 	if strings.HasPrefix(route, "/login") {
@@ -191,6 +218,9 @@ func (a *app) routeChanged(route string) {
 	if !isPublicRoute(route) {
 		// Signed in.
 		a.login = loginState{tried: a.login.tried}
+		if strings.HasPrefix(prev, "/login") {
+			a.notify(components.ToastSuccess, "login", a.tr("已登录", "Signed in"), "")
+		}
 	}
 }
 
@@ -260,7 +290,8 @@ func (a *app) loginFailed(err error) {
 	case errExpired:
 		msg = a.tr("验证码已过期，请重新登录。", "The code expired. Sign in again.")
 	}
-	a.login = loginState{err: msg, tried: true}
+	a.login = loginState{tried: true}
+	a.notify(components.ToastError, "login", a.tr("登录失败", "Sign-in failed"), msg)
 	mygo.App.Focus()
 }
 
@@ -278,9 +309,9 @@ func (a *app) handoff(token string) {
 			if err != nil {
 				if isUnauthorized(err) {
 					deleteToken()
-					a.login.err = a.tr("登录已过期，请重新登录。", "The session expired. Sign in again.")
+					a.notify(components.ToastError, "login", a.tr("登录已过期", "The session expired"), a.tr("请重新登录。", "Sign in again."))
 				} else {
-					a.login.err = err.Error()
+					a.notify(components.ToastError, "login", a.tr("登录失败", "Sign-in failed"), err.Error())
 				}
 				return
 			}
@@ -296,6 +327,7 @@ func (a *app) handoff(token string) {
 // signOut ends the web admin's session and the Keychain's.
 func (a *app) signOut() {
 	a.login = loginState{tried: true}
+	a.notify(components.ToastInfo, "login", a.tr("已退出登录", "Signed out"), "")
 	srv, web := a.srv, a.web
 	token := loadToken()
 	deleteToken()
@@ -333,6 +365,7 @@ func (a *app) changeServer() {
 	a.set.Server = ""
 	_ = a.set.save()
 	a.win.Invalidate()
+	a.invalidatePrefs()
 }
 
 func (a *app) openMainSite() {
@@ -352,6 +385,7 @@ func (a *app) setAppearance(v string) {
 	a.set.Appearance = v
 	_ = a.set.save()
 	mygo.Theme.SetSource(themeSource(v))
+	a.invalidatePrefs()
 }
 
 func (a *app) setLang(v string) {
@@ -361,6 +395,7 @@ func (a *app) setLang(v string) {
 	a.set.Lang = v
 	_ = a.set.save()
 	a.buildMenu()
+	a.invalidatePrefs()
 	if a.web != nil {
 		route := a.route
 		if route == "" {

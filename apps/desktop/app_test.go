@@ -199,7 +199,10 @@ func TestScreens(t *testing.T) {
 	}
 
 	a := &app{set: settings{Lang: "zh-CN", Appearance: "system"}}
-	tt := ui.NewTester(a.view, 1100, 700)
+	if a.pageKind() != pageSetup {
+		t.Errorf("page = %q, want setup", a.pageKind())
+	}
+	tt := ui.NewTester(a.pageView, 1100, 700)
 	if !tt.HasText("连接你的空间") {
 		t.Errorf("setup: %q", tt.Texts())
 	}
@@ -225,7 +228,10 @@ func TestScreens(t *testing.T) {
 	if a.nav != "/posts/edit" {
 		t.Errorf("nav = %q", a.nav)
 	}
-	tt = ui.NewTester(a.mainView, 1100, 900)
+	if len(a.toasts) != 1 || a.toasts[0].Title != "已登录" {
+		t.Errorf("signing in from /login: toasts = %+v", a.toasts)
+	}
+	tt = ui.NewTester(a.sidebarView, 260, 900)
 	for _, want := range []string{"仪表盘", "内容", "博文", "写博文", "分类", "手记", "系统", "设置"} {
 		if !tt.HasText(want) {
 			t.Errorf("sidebar lacks %q: %q", want, tt.Texts())
@@ -234,5 +240,132 @@ func TestScreens(t *testing.T) {
 	if tt.HasText("写手记") {
 		t.Error("a branch that is not active is expanded")
 	}
-	shot("main", tt)
+	shot("sidebar", tt)
+
+	tt = ui.NewTester(a.contentTitle, 600, 48)
+	if !tt.HasText("博文") || !tt.HasText("写博文") {
+		t.Errorf("title: %q", tt.Texts())
+	}
+
+	a.page = pageMain
+	a.openPalette()
+	tt = ui.NewTester(a.contentView, 1100, 700)
+	if !tt.HasText("前往页面或操作") || !tt.HasText("写博文") {
+		t.Errorf("palette: %q", tt.Texts())
+	}
+	shot("palette", tt)
+
+	tt = ui.NewTester(a.prefsView, 720, 520)
+	for _, want := range []string{"通用", "外观", "账户", "https://server.example.com", "更换服务器…"} {
+		if !tt.HasText(want) {
+			t.Errorf("settings lacks %q: %q", want, tt.Texts())
+		}
+	}
+	shot("settings", tt)
+}
+
+func TestPageKind(t *testing.T) {
+	a := &app{}
+	if got := a.pageKind(); got != pageSetup {
+		t.Errorf("no server: %q", got)
+	}
+	a.srv = server{Root: "https://s.example"}
+	if got := a.pageKind(); got != pageConnecting {
+		t.Errorf("no web view: %q", got)
+	}
+}
+
+func TestNavTrail(t *testing.T) {
+	trail := navTrail("/posts/edit")
+	if len(trail) != 2 || trail[0].Path != "/posts" || trail[1].Path != "/posts/edit" {
+		t.Errorf("navTrail(/posts/edit) = %+v", trail)
+	}
+	if navTrail("") != nil || navTrail("/nope") != nil {
+		t.Error("navTrail of no item")
+	}
+}
+
+func TestPaletteItems(t *testing.T) {
+	a := &app{set: settings{Lang: "en-US"}}
+	ids := map[string]bool{}
+	for _, it := range a.paletteItems() {
+		if it.ID == "" || ids[it.ID] {
+			t.Errorf("empty or duplicate ID %q", it.ID)
+		}
+		ids[it.ID] = true
+	}
+	for _, want := range []string{"nav:/dashboard", "nav:/posts/edit", "act:prefs", "act:sign-out", "act:lang-zh"} {
+		if !ids[want] {
+			t.Errorf("palette lacks %s", want)
+		}
+	}
+	a.runCommand("nav:/comments")
+	if a.nav != "/comments" {
+		t.Errorf("nav after the palette = %q", a.nav)
+	}
+}
+
+// TestReadmeScreenshots renders the README's screenshots, at 2x, into
+// $README_SCREENSHOTS (docs/screenshots):
+//
+//	README_SCREENSHOTS=docs/screenshots go test -run TestReadmeScreenshots
+//
+// They are headless renders of the native views: the web admin, which the
+// web view shows, is left out.
+func TestReadmeScreenshots(t *testing.T) {
+	dir := os.Getenv("README_SCREENSHOTS")
+	if dir == "" {
+		t.Skip("README_SCREENSHOTS is not set")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shot := func(name string, view func(*ui.Context), w, h int, dark bool) {
+		tt := ui.NewTester(view, w, h)
+		tt.SetScale(2)
+		tt.SetDark(dark)
+		for i := 0; i < 10; i++ {
+			tt.Advance(100 * time.Millisecond)
+			tt.Frame()
+		}
+		f, err := os.Create(filepath.Join(dir, name+".png"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if err := png.Encode(f, tt.Image()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a := &app{set: settings{Lang: "zh-CN", Appearance: "system"}}
+	shot("setup", a.pageView, 900, 560, false)
+
+	a.srv = server{Root: "https://server.example.com", API: "https://server.example.com/api/v3"}
+	a.route = "/login"
+	a.login.code = &deviceCode{UserCode: "ABCD-EFGH"}
+	shot("login", a.loginView, 900, 560, false)
+
+	// The sidebar beside the content area, as the shell lays them out, with
+	// the command palette open over them.
+	a.login = loginState{}
+	a.routeChanged("/posts/edit?id=1")
+	a.toasts = nil
+	a.page = pageMain
+	main := func(c *ui.Context) {
+		th := c.Theme()
+		ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+			ui.Column(c).Width(220).Shrink(0).Background(th.Surface).Children(func() { a.sidebarView(c) })
+			ui.Box(c).Width(1).Background(th.Border)
+			ui.Column(c).Grow(1).MinWidth(0).Children(func() { a.contentView(c) })
+		})
+	}
+	a.openPalette()
+	a.palette.Query = "写"
+	shot("palette", main, 1100, 700, false)
+	a.paletteOpen = false
+
+	shot("settings", a.prefsView, 720, 480, false)
+	a.prefsState.Category = "appearance"
+	shot("settings-dark", a.prefsView, 720, 480, true)
 }
