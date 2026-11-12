@@ -2,6 +2,6 @@
   "name": "Mix Space",
   "slug": "mix-space",
   "identifier": "space.mx.desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "out": "build"
 }
